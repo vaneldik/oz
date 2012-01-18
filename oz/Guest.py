@@ -521,7 +521,9 @@ class Guest(object):
                     self.log.debug(" str3 is %s" % e.get_str3())
                     self.log.debug(" int1 is %d" % e.get_int1())
                     self.log.debug(" int2 is %d" % e.get_int2())
-                    raise
+                    self.log.debug(" WARNING: assuming this exception means install was successful")
+                    break
+                    #raise
 
             # if we saw no disk or network activity in the countdown window,
             # we presume the install has hung.  Fail here
@@ -599,7 +601,9 @@ class Guest(object):
                     self.log.debug(" str3 is %s" % e.get_str3())
                     self.log.debug(" int1 is %d" % e.get_int1())
                     self.log.debug(" int2 is %d" % e.get_int2())
-                    raise
+                    self.log.debug(" WARNING: assuming this exception means shutdown was successful")
+                    break
+                    #raise
 
             count -= 1
             time.sleep(1)
@@ -821,7 +825,11 @@ class Guest(object):
             raise oz.OzException.OzException("invalid <disk> entry without a driver")
 
         for domid in self.libvirt_conn.listDomainsID():
-            doc = libxml2.parseDoc(self.libvirt_conn.lookupByID(domid).XMLDesc(0))
+            try:
+                doc = libxml2.parseDoc(self.libvirt_conn.lookupByID(domid).XMLDesc(0))
+            except:
+                self.log.debug("Could not get XML for domain ID (%s) - assuming it has shut down" % (domid))
+                continue
             namenode = doc.xpathEval('/domain/name')
             if len(namenode) != 1:
                 # hm, odd, a domain without a name?
