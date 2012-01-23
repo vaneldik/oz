@@ -508,22 +508,31 @@ class Guest(object):
                     total_net_bytes += rx_bytes + tx_bytes
 
             except libvirt.libvirtError, e:
-                if e.get_error_domain() == libvirt.VIR_FROM_QEMU and (e.get_error_code() in [libvirt.VIR_ERR_NO_DOMAIN, libvirt.VIR_ERR_SYSTEM_ERROR, libvirt.VIR_ERR_OPERATION_FAILED, libvirt.VIR_ERR_OPERATION_INVALID]):
-                    break
-                else:
-                    self.log.debug("Libvirt Block Stats Failed:")
-                    self.log.debug(" code is %d" % e.get_error_code())
-                    self.log.debug(" domain is %d" % e.get_error_domain())
-                    self.log.debug(" message is %s" % e.get_error_message())
-                    self.log.debug(" level is %d" % e.get_error_level())
-                    self.log.debug(" str1 is %s" % e.get_str1())
-                    self.log.debug(" str2 is %s" % e.get_str2())
-                    self.log.debug(" str3 is %s" % e.get_str3())
-                    self.log.debug(" int1 is %d" % e.get_int1())
-                    self.log.debug(" int2 is %d" % e.get_int2())
-                    self.log.debug(" WARNING: assuming this exception means install was successful")
-                    break
-                    #raise
+                # Testing has suggested that a wide variety of exceptions can occur when making
+                # these calls on a VM in the process of shutting down.
+                # Dan Berrange suggested that rather than checking a whitelist of exceptions we simply
+                # verify that the domain really is gone.
+
+                # Wait 5 seconds for the potential VM shutdown to settle
+                time.sleep(5)
+                try:
+                    libvirt_dom.info()
+                except libvirt.libvirtError, f:
+                    if f.get_error_domain() == libvirt.VIR_FROM_QEMU and f.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN:
+                        break
+                    else:
+                        self.log.debug("Libvirt domain info() call failed with unexpected result")
+                        self.log.debug("Expected domain (%d) and code (%d) but got:" % (libvirt.VIR_FROM_QEMU, libvirt.VIR_ERR_NO_DOMAIN))
+                        self.log.debug(" code is %d" % f.get_error_code())
+                        self.log.debug(" domain is %d" % f.get_error_domain())
+                        self.log.debug(" message is %s" % f.get_error_message())
+                        self.log.debug(" level is %d" % f.get_error_level())
+                        self.log.debug(" str1 is %s" % f.get_str1())
+                        self.log.debug(" str2 is %s" % f.get_str2())
+                        self.log.debug(" str3 is %s" % f.get_str3())
+                        self.log.debug(" int1 is %d" % f.get_int1())
+                        self.log.debug(" int2 is %d" % f.get_int2())
+                        raise
 
             # if we saw no disk or network activity in the countdown window,
             # we presume the install has hung.  Fail here
@@ -588,23 +597,32 @@ class Guest(object):
             try:
                 libvirt_dom.info()
             except libvirt.libvirtError, e:
-                if e.get_error_domain() == libvirt.VIR_FROM_QEMU and (e.get_error_code() in [libvirt.VIR_ERR_NO_DOMAIN, libvirt.VIR_ERR_SYSTEM_ERROR, libvirt.VIR_ERR_OPERATION_FAILED]):
-                    break
-                else:
-                    self.log.debug("Libvirt Domain Info Failed:")
-                    self.log.debug(" code is %d" % e.get_error_code())
-                    self.log.debug(" domain is %d" % e.get_error_domain())
-                    self.log.debug(" message is %s" % e.get_error_message())
-                    self.log.debug(" level is %d" % e.get_error_level())
-                    self.log.debug(" str1 is %s" % e.get_str1())
-                    self.log.debug(" str2 is %s" % e.get_str2())
-                    self.log.debug(" str3 is %s" % e.get_str3())
-                    self.log.debug(" int1 is %d" % e.get_int1())
-                    self.log.debug(" int2 is %d" % e.get_int2())
-                    self.log.debug(" WARNING: assuming this exception means shutdown was successful")
-                    break
-                    #raise
+                # Testing has suggested that a wide variety of exceptions can occur when making
+                # these calls on a VM in the process of shutting down.
+                # Dan Berrange suggested that rather than checking a growing white list  of exceptions 
+                # we simply verify that the domain really is gone.
+                # This may be more important during or JEOS install tests, but it should work here as well
 
+                # Wait 5 seconds for the potential VM shutdown to settle
+                time.sleep(5)
+                try:
+                    libvirt_dom.info()
+                except libvirt.libvirtError, f:
+                    if f.get_error_domain() == libvirt.VIR_FROM_QEMU and f.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN:
+                        break
+                    else:
+                        self.log.debug("Libvirt domain info() call failed with unexpected result")
+                        self.log.debug("Expected domain (%d) and code (%d) but got:" % (libvirt.VIR_FROM_QEMU, libvirt.VIR_ERR_NO_DOMAIN))
+                        self.log.debug(" code is %d" % f.get_error_code())
+                        self.log.debug(" domain is %d" % f.get_error_domain())
+                        self.log.debug(" message is %s" % f.get_error_message())
+                        self.log.debug(" level is %d" % f.get_error_level())
+                        self.log.debug(" str1 is %s" % f.get_str1())
+                        self.log.debug(" str2 is %s" % f.get_str2())
+                        self.log.debug(" str3 is %s" % f.get_str3())
+                        self.log.debug(" int1 is %d" % f.get_int1())
+                        self.log.debug(" int2 is %d" % f.get_int2())
+                        raise
             count -= 1
             time.sleep(1)
 
@@ -828,7 +846,7 @@ class Guest(object):
             try:
                 doc = libxml2.parseDoc(self.libvirt_conn.lookupByID(domid).XMLDesc(0))
             except:
-                self.log.debug("Could not get XML for domain ID (%s) - assuming it has shut down" % (domid))
+                self.log.debug("Could not get XML for domain ID (%s) - assuming it has been deleted" % (domid))
                 continue
             namenode = doc.xpathEval('/domain/name')
             if len(namenode) != 1:
