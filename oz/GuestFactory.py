@@ -61,10 +61,12 @@ def guest_factory(tdl, config, auto, output_disk=None):
                         "ScientificLinux-4", "SL-4"]:
         klass = oz.RHEL_4.get_class(tdl, config, auto, output_disk)
     elif tdl.distro in ["RedHatEnterpriseLinux-5", "RHEL-5", "CentOS-5",
-                        "ScientificLinux-5", "SL-5"]:
+                        "ScientificLinux-5", "SL-5", 
+                        "ScientificLinuxCern-5", "SLC-5"]:
         klass = oz.RHEL_5.get_class(tdl, config, auto, output_disk)
     elif tdl.distro in ["RedHatEnterpriseLinux-6", "RHEL-6", "CentOS-6",
                         "ScientificLinux-6", "SL-6",
+                        "ScientificLinuxCern-6", "SLC-6",
                         "OracleEnterpriseLinux-6", "OEL-6"]:
         klass = oz.RHEL_6.get_class(tdl, config, auto, output_disk)
     elif tdl.distro == "Ubuntu":
@@ -96,7 +98,7 @@ def distrolist():
     print "   RHEL 2.1: GOLD, U2, U3, U4, U5, U6"
     print "   RHEL 3: GOLD, U1, U2, U3, U4, U5, U6, U7, U8, U9"
     print "   RHEL 4: GOLD, U1, U2, U3, U4, U5, U6, U7, U8, U9"
-    print "   RHEL 5: GOLD, U1, U2, U3, U4, U5, U6, U7"
+    print "   RHEL 5: GOLD, U1, U2, U3, U4, U5, U6, U7, U8"
     print "   RHEL 6: 0, 1, 2"
     print "   Ubuntu: 6.06[.1,.2], 6.10, 7.04, 7.10, 8.04[.1,.2,.3,.4], 8.10, 9.04, 9.10, 10.04[.1,.2,.3], 10.10, 11.04, 11.10"
     print "   Windows: 2000, XP, 2003, 7, 2008"
@@ -109,6 +111,8 @@ def distrolist():
     print "   Scientific Linux 4: U9"
     print "   Scientific Linux 5: U6"
     print "   Scientific Linux 6: 0"
+    print "   Scientific Linux CERN 5: U7, U8"
+    print "   Scientific Linux CERN 6: 2"
     print "   OEL 6: 0, 1"
     print "   Debian: 5, 6"
     print "   Mandrake: 9.1, 9.2, 10.0, 10.1, 10.2"
