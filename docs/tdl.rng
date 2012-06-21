@@ -9,7 +9,9 @@
     <element name='template'>
       <optional>
         <attribute name='version'>
-          <text/>
+	  <choice>
+	    <value>1.0</value>
+	  </choice>
         </attribute>
       </optional>
       <interleave>
@@ -90,7 +92,7 @@
                 </attribute>
                 <choice>
                   <ref name='rawtype'/>
-                  <ref name='base64type'/>
+                  <ref name='base64_or_emptytype'/>
                 </choice>
               </element>
             </zeroOrMore>
@@ -157,6 +159,13 @@
                 </interleave>
               </element>
             </zeroOrMore>
+          </element>
+        </optional>
+        <optional>
+          <element name='disk'>
+            <element name='size'>
+              <ref name='number'/>
+            </element>
           </element>
         </optional>
       </interleave>
@@ -228,11 +237,31 @@
     </data>
   </define>
 
+  <define name='base64_or_empty'>
+    <choice>
+      <ref name='base64'/>
+      <empty/>
+    </choice>
+  </define>
+
+  <define name='base64_or_emptytype'>
+    <attribute name='type'>
+      <value>base64</value>
+    </attribute>
+    <ref name='base64_or_empty'/>
+  </define>
+
   <define name='base64type'>
     <attribute name='type'>
       <value>base64</value>
     </attribute>
     <ref name='base64'/>
+  </define>
+
+  <define name='number'>
+    <data type="string">
+      <param name="pattern">[0-9]*</param>
+    </data>
   </define>
 
 </grammar>

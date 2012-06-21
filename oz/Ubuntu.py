@@ -1,4 +1,4 @@
-# Copyright (C) 2010,2011  Chris Lalancette <clalance@redhat.com>
+# Copyright (C) 2010,2011,2012  Chris Lalancette <clalance@redhat.com>
 
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -29,7 +29,7 @@ import oz.OzException
 
 class UbuntuGuest(oz.Guest.CDGuest):
     """
-    Class for Ubuntu 6.06, 6.10, 7.04, 7.10, 8.04, 8.10, 9.04, 9.10, 10.04, 10.10, 11.04, and 11.10 installation.
+    Class for Ubuntu 6.06, 6.10, 7.04, 7.10, 8.04, 8.10, 9.04, 9.10, 10.04, 10.10, 11.04, 11.10, and 12.04 installation.
     """
     def __init__(self, tdl, config, auto, output_disk, initrd, nicmodel,
                  diskbus):
@@ -327,8 +327,6 @@ Subsystem       sftp    /usr/libexec/openssh/sftp-server
         """
         self.log.info("Collection Setup")
 
-        oz.ozutil.mkdir_p(self.icicle_tmp)
-
         g_handle = self._guestfs_handle_setup(libvirt_xml)
 
         # we have to do 3 things to make sure we can ssh into Ubuntu
@@ -432,9 +430,6 @@ Subsystem       sftp    /usr/libexec/openssh/sftp-server
 
         self.log.debug("Installing additional repository files")
 
-        self._remotecertdir = "/etc/pki/ozrepos"
-        self._remotecertdir_created = False
-
         for repo in self.tdl.repositories.values():
             self.guest_execute_command(guestaddr, "apt-add-repository %s" % (repo.url))
             self.guest_execute_command(guestaddr, "apt-get update")
@@ -471,7 +466,8 @@ Subsystem       sftp    /usr/libexec/openssh/sftp-server
 
     def do_icicle(self, guestaddr):
         """
-        Method to collect the package information and generate the ICICLE XML.
+        Method to collect the package information and generate the ICICLE
+        XML.
         """
         stdout, stderr, retcode = self.guest_execute_command(guestaddr,
                                                              'dpkg --get-selections',
@@ -590,6 +586,6 @@ def get_class(tdl, config, auto, output_disk=None):
         return UbuntuGuest(tdl, config, auto, output_disk, "initrd.gz",
                            "virtio", "virtio")
     if tdl.update in ["9.10", "10.04", "10.04.1", "10.04.2", "10.04.3", "10.10",
-                      "11.04", "11.10"]:
+                      "11.04", "11.10", "12.04"]:
         return UbuntuGuest(tdl, config, auto, output_disk, "initrd.lz",
                            "virtio", "virtio")

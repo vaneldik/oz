@@ -1,4 +1,4 @@
-# Copyright (C) 2010,2011  Chris Lalancette <clalance@redhat.com>
+# Copyright (C) 2010,2011,2012  Chris Lalancette <clalance@redhat.com>
 
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -49,8 +49,9 @@ import oz.OzException
 
 def subprocess_check_output(*popenargs, **kwargs):
     """
-    Function to call a subprocess and gather the output.  Deprecated; slated to
-    be removed in Oz version 0.7.0.  See oz.ozutil.subprocess_check_output().
+    Function to call a subprocess and gather the output.  Deprecated; slated
+    to be removed in Oz version 0.7.0. See
+    oz.ozutil.subprocess_check_output().
     """
     return oz.ozutil.subprocess_check_output(*popenargs, **kwargs)
 
@@ -203,8 +204,16 @@ class Guest(object):
         try:
             self.url = self._check_url(iso=iso_allowed, url=url_allowed)
         except:
-            self.log.debug("Install URL validation failed on exception", exc_info = True)
-            raise oz.OzException.OzException("Install URL validation failed")
+            self.log.debug("Install URL validation failed:", exc_info=True)
+            raise
+
+        oz.ozutil.mkdir_p(self.icicle_tmp)
+
+        self.disksize = self.tdl.disksize
+        if self.disksize is None:
+            self.disksize = 10
+        else:
+            self.disksize = int(self.disksize)
 
         self.log.debug("Name: %s, UUID: %s" % (self.tdl.name, self.uuid))
         self.log.debug("MAC: %s, distro: %s" % (self.macaddr, self.tdl.distro))
@@ -460,10 +469,96 @@ class Guest(object):
         parameter, specified in GB.  If force is False (the default), then
         a diskimage will not be created if a cached JEOS is found.  If
         force is True, a diskimage will be created regardless of whether a
-        cached JEOS exists.  See the oz-install man page for more information
-        about JEOS caching.
+        cached JEOS exists.  See the oz-install man page for more
+        information about JEOS caching.
         """
         return self._internal_generate_diskimage(size, force, False)
+
+    def _get_disks_and_interfaces(self, libvirt_dom):
+        """
+        Method to figure out the disks and interfaces attached to a domain.
+        The method returns two lists: the first is a list of disk devices (like
+        hda, hdb, etc), and the second is a list of network devices (like vnet0,
+        vnet1, etc).
+        """
+        doc = libxml2.parseDoc(libvirt_dom.XMLDesc(0))
+        disktargets = doc.xpathEval("/domain/devices/disk/target")
+        if len(disktargets) < 1:
+            raise oz.OzException.OzException("Could not find disk target")
+        disks = []
+        for target in disktargets:
+            disks.append(target.prop('dev'))
+        if not disks:
+            raise oz.OzException.OzException("Could not find disk target device")
+        inttargets = doc.xpathEval("/domain/devices/interface/target")
+        if len(inttargets) < 1:
+            raise oz.OzException.OzException("Could not find interface target")
+        interfaces = []
+        for target in inttargets:
+            interfaces.append(target.prop('dev'))
+        if not interfaces:
+            raise oz.OzException.OzException("Could not find interface target device")
+
+        return disks, interfaces
+
+    def _get_disk_and_net_activity(self, libvirt_dom, disks, interfaces):
+        """
+        Method to collect the disk and network activity by the domain.  The
+        method returns two numbers: the first is the sum of all disk activity
+        from all disks, and the second is the sum of all network traffic from
+        all network devices.
+        """
+        total_disk_req = 0
+        for dev in disks:
+            rd_req, rd_bytes, wr_req, wr_bytes, errs = libvirt_dom.blockStats(dev)
+            total_disk_req += rd_req + wr_req
+
+        total_net_bytes = 0
+        for dev in interfaces:
+            rx_bytes, rx_packets, rx_errs, rx_drop, tx_bytes, tx_packets, tx_errs, tx_drop = libvirt_dom.interfaceStats(dev)
+            total_net_bytes += rx_bytes + tx_bytes
+
+        return total_disk_req, total_net_bytes
+
+    def _wait_for_clean_shutdown(self, libvirt_dom, saved_exception):
+        """
+        Internal method to wait for a clean shutdown of a libvirt domain that
+        is suspected to have cleanly quit.  If that domain did cleanly quit,
+        then we will hit a libvirt VIR_ERR_NO_DOMAIN exception on the very
+        first libvirt call and return with no delay.  If no exception, or some
+        other exception occurs, we wait up to 10 seconds for the domain to go
+        away.  If the domain is still there after 10 seconds then we raise the
+        original exception that was passed in.
+        """
+        count = 10
+        while count > 0:
+            self.log.debug("Waiting for %s to complete shutdown, %d/10" % (self.tdl.name, count))
+            try:
+                libvirt_dom.info()
+            except libvirt.libvirtError, e:
+                if e.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN:
+                    break
+            count -= 1
+            time.sleep(1)
+
+        if count == 0:
+            # Got something other than the expected exception even after 10
+            # seconds - re-raise
+            if saved_exception:
+                self.log.debug("Libvirt Domain Info Failed:")
+                self.log.debug(" code is %d" % saved_exception.get_error_code())
+                self.log.debug(" domain is %d" % saved_exception.get_error_domain())
+                self.log.debug(" message is %s" % saved_exception.get_error_message())
+                self.log.debug(" level is %d" % saved_exception.get_error_level())
+                self.log.debug(" str1 is %s" % saved_exception.get_str1())
+                self.log.debug(" str2 is %s" % saved_exception.get_str2())
+                self.log.debug(" str3 is %s" % saved_exception.get_str3())
+                self.log.debug(" int1 is %d" % saved_exception.get_int1())
+                self.log.debug(" int2 is %d" % saved_exception.get_int2())
+                raise saved_exception
+            else:
+                # the passed in exception was None, just raise a generic error
+                raise oz.OzException.OzException("Unknown libvirt error")
 
     def _wait_for_install_finish(self, libvirt_dom, count,
                                  inactivity_timeout=300):
@@ -473,44 +568,19 @@ class Guest(object):
         install was successful), or until the timeout is reached (at which
         point it is assumed the install failed and raise an exception).
         """
-        # first find the disk device we are installing to; this will be
-        # monitored for activity during the installation
-        doc = libxml2.parseDoc(libvirt_dom.XMLDesc(0))
-        disktargets = doc.xpathEval("/domain/devices/disk/target")
-        if len(disktargets) < 1:
-            raise oz.OzException.OzException("Could not find disk target")
-        diskdevs = []
-        for target in disktargets:
-            diskdevs.append(target.prop('dev'))
-        if not diskdevs:
-            raise oz.OzException.OzException("Could not find disk target device")
-        inttargets = doc.xpathEval("/domain/devices/interface/target")
-        if len(inttargets) < 1:
-            raise oz.OzException.OzException("Could not find interface target")
-        intdevs = []
-        for target in inttargets:
-            intdevs.append(target.prop('dev'))
-        if not intdevs:
-            raise oz.OzException.OzException("Could not find interface target device")
+
+        disks, interfaces = self._get_disks_and_interfaces(libvirt_dom)
 
         last_disk_activity = 0
         last_network_activity = 0
         inactivity_countdown = inactivity_timeout
         origcount = count
-        while count > 0:
+        saved_exception = None
+        while count > 0 and inactivity_countdown > 0:
             if count % 10 == 0:
                 self.log.debug("Waiting for %s to finish installing, %d/%d" % (self.tdl.name, count, origcount))
             try:
-                total_disk_req = 0
-                for dev in diskdevs:
-                    rd_req, rd_bytes, wr_req, wr_bytes, errs = libvirt_dom.blockStats(dev)
-                    total_disk_req += rd_req + wr_req
-
-                total_net_bytes = 0
-                for dev in intdevs:
-                    rx_bytes, rx_packets, rx_errs, rx_drop, tx_bytes, tx_packets, tx_errs, tx_drop = libvirt_dom.interfaceStats(dev)
-                    total_net_bytes += rx_bytes + tx_bytes
-
+                total_disk_req, total_net_bytes = self._get_disk_and_net_activity(libvirt_dom, disks, interfaces)
             except libvirt.libvirtError, e:
                 # Testing has suggested that a wide variety of exceptions can occur when making
                 # these calls on a VM in the process of shutting down.
@@ -577,15 +647,20 @@ class Guest(object):
             count -= 1
             time.sleep(1)
 
+        # We get here because of a libvirt exception, an absolute timeout, or
+        # an I/O timeout; we sort this out below
         if count == 0:
             # if we timed out, then let's make sure to take a screenshot.
-            screenshot_path = self._capture_screenshot(libvirt_dom.XMLDesc(0))
-            exc_str = "Timed out waiting for install to finish.  "
-            if screenshot_path is not None:
-                exc_str += "Check screenshot at %s for more detail" % (screenshot_path)
-            else:
-                exc_str += "Failed to take screenshot"
-            raise oz.OzException.OzException(exc_str)
+            screenshot_text = self._capture_screenshot(libvirt_dom.XMLDesc(0))
+            raise oz.OzException.OzException("Timed out waiting for install to finish.  %s" % (screenshot_text))
+        elif inactivity_countdown == 0:
+            # if we saw no disk or network activity in the countdown window,
+            # we presume the install has hung.  Fail here
+            screenshot_text = self._capture_screenshot(libvirt_dom.XMLDesc(0))
+            raise oz.OzException.OzException("No disk activity in %d seconds, failing.  %s" % (inactivity_timeout, screenshot_text))
+
+        # We get here only if we got a libvirt exception
+        self._wait_for_clean_shutdown(libvirt_dom, saved_exception)
 
         self.log.info("Install of %s succeeded" % (self.tdl.name))
 
@@ -595,6 +670,7 @@ class Guest(object):
         True if the guest shutdown in the specified time, False otherwise.
         """
         origcount = count
+        saved_exception = None
         while count > 0:
             if count % 10 == 0:
                 self.log.debug("Waiting for %s to shutdown, %d/%d" % (self.tdl.name, count, origcount))
@@ -630,7 +706,14 @@ class Guest(object):
             count -= 1
             time.sleep(1)
 
-        return count != 0
+        # Timed Out
+        if count == 0:
+            return False
+
+        # We get here only if we got a libvirt exception
+        self._wait_for_clean_shutdown(libvirt_dom, saved_exception)
+
+        return True
 
     def _download_file(self, from_url, fd, show_progress):
         """
@@ -817,10 +900,10 @@ class Guest(object):
 
         try:
             oz.ozutil.subprocess_check_output(['gvnccapture', vnc, screenshot])
-            return screenshot
+            return "Check screenshot at %s for more detail" % (screenshot)
         except:
             self.log.error("Failed to take screenshot")
-            return None
+            return "Failed to take screenshot"
 
     def _guestfs_handle_setup(self, libvirt_xml):
         """
@@ -1019,7 +1102,7 @@ class Guest(object):
                 if len(split) != 2:
                     raise oz.OzException.OzException("Guest checked in with bogus data")
                 addr = split[0]
-                uuid = split[1]
+                uuidstr = split[1]
                 try:
                     # we use socket.inet_aton() to validate the IP address
                     socket.inet_aton(addr)
@@ -1030,7 +1113,7 @@ class Guest(object):
                 # Previously, if we saw a bogus UUID, we would ignore it and
                 # continue waiting for the "right" one.  Now we are throwing
                 # an exception.  I kind of like the previous behavior better
-                if uuid != str(self.uuid):
+                if uuidstr != str(self.uuid):
                     raise oz.OzException.OzException("Guest checked in with unknown UUID")
                 break
 
@@ -1072,7 +1155,7 @@ class Guest(object):
     def mkdir_p(self, path):
         """
         Create a directory and all of its parents.
-        Deprecated; slated for removal in Oz 0.7.0.  See oz.ozutil.mkdir_p().
+        Deprecated; slated for removal in Oz 0.7.0. See oz.ozutil.mkdir_p().
         """
         return oz.ozutil.mkdir_p(path)
 
@@ -1107,7 +1190,7 @@ class Guest(object):
             elif url:
                 raise oz.OzException.OzException("%s installs must be done via url" % (self.tdl.distro))
             else:
-                raise oz.OzException.OzException("Unknown error occured while determining install URL")
+                raise oz.OzException.OzException("Unknown error occurred while determining install URL")
 
         return url
 
@@ -1417,39 +1500,40 @@ class CDGuest(Guest):
         if not force and os.access(self.jeos_filename, os.F_OK):
             self.log.info("Found cached JEOS, using it")
             oz.ozutil.copyfile_sparse(self.jeos_filename, self.diskimage)
+            return self._generate_xml("hd", None)
+
+        self.log.info("Running install for %s" % (self.tdl.name))
+
+        cddev = self._InstallDev("cdrom", self.output_iso, "hdc")
+
+        if timeout is None:
+            timeout = 1200
+
+        def exists(name):
+            """
+            Internal utility method to check if an attribute exists and is
+            a path to a valid filename.
+            """
+            return hasattr(self, name) and os.access(getattr(self, name), os.F_OK)
+
+        if exists("kernelfname") and exists("initrdfname") and hasattr(self, "cmdline"):
+            xml = self._generate_xml(None, None, self.kernelfname,
+                                     self.initrdfname, self.cmdline)
         else:
-            self.log.info("Running install for %s" % (self.tdl.name))
+            xml = self._generate_xml("cdrom", cddev)
 
-            cddev = self._InstallDev("cdrom", self.output_iso, "hdc")
+        dom = self.libvirt_conn.createXML(xml, 0)
+        self._wait_for_install_finish(dom, timeout)
 
-            if timeout is None:
-                timeout = 1200
-
-            def exists(name):
-                """
-                Internal utility method to check if an attribute exists and is
-                a path to a valid filename.
-                """
-                return hasattr(self, name) and os.access(getattr(self, name), os.F_OK)
-
-            if exists("kernelfname") and exists("initrdfname") and hasattr(self, "cmdline"):
-                xml = self._generate_xml(None, None, self.kernelfname,
-                                         self.initrdfname, self.cmdline)
-            else:
-                xml = self._generate_xml("cdrom", cddev)
-
-            dom = self.libvirt_conn.createXML(xml, 0)
+        for i in range(0, reboots):
+            dom = self.libvirt_conn.createXML(self._generate_xml("hd", cddev),
+                                              0)
             self._wait_for_install_finish(dom, timeout)
 
-            for i in range(0, reboots):
-                dom = self.libvirt_conn.createXML(self._generate_xml("hd",
-                                                                     cddev), 0)
-                self._wait_for_install_finish(dom, timeout)
-
-            if self.cache_jeos:
-                self.log.info("Caching JEOS")
-                oz.ozutil.mkdir_p(self.jeos_cache_dir)
-                oz.ozutil.copyfile_sparse(self.diskimage, self.jeos_filename)
+        if self.cache_jeos:
+            self.log.info("Caching JEOS")
+            oz.ozutil.mkdir_p(self.jeos_cache_dir)
+            oz.ozutil.copyfile_sparse(self.diskimage, self.jeos_filename)
 
         return self._generate_xml("hd", None)
 
@@ -1476,14 +1560,15 @@ class CDGuest(Guest):
 
     def _modify_iso(self):
         """
-        Base method to modify the ISO.  Subclasses are expected to override this
+        Base method to modify the ISO.  Subclasses are expected to override
+        this.
         """
         raise oz.OzException.OzException("Internal error, subclass didn't override modify_iso")
 
     def _generate_new_iso(self):
         """
         Base method to generate the new ISO.  Subclasses are expected to
-        override this
+        override this.
         """
         raise oz.OzException.OzException("Internal error, subclass didn't override generate_new_iso")
 
@@ -1531,7 +1616,7 @@ class CDGuest(Guest):
         Method to cleanup the local ISO contents.
         """
         self.log.info("Cleaning up old ISO data")
-        shutil.rmtree(self.iso_contents)
+        oz.ozutil.rmtree_and_sync(self.iso_contents)
 
     def cleanup_install(self):
         """
@@ -1592,22 +1677,23 @@ class FDGuest(Guest):
         if not force and os.access(self.jeos_filename, os.F_OK):
             self.log.info("Found cached JEOS, using it")
             oz.ozutil.copyfile_sparse(self.jeos_filename, self.diskimage)
-        else:
-            self.log.info("Running install for %s" % (self.tdl.name))
+            return self._generate_xml("hd", None)
 
-            fddev = self._InstallDev("floppy", self.output_floppy, "fda")
+        self.log.info("Running install for %s" % (self.tdl.name))
 
-            if timeout is None:
-                timeout = 1200
+        fddev = self._InstallDev("floppy", self.output_floppy, "fda")
 
-            dom = self.libvirt_conn.createXML(self._generate_xml("fd", fddev),
-                                              0)
-            self._wait_for_install_finish(dom, timeout)
+        if timeout is None:
+            timeout = 1200
 
-            if self.cache_jeos:
-                self.log.info("Caching JEOS")
-                oz.ozutil.mkdir_p(self.jeos_cache_dir)
-                oz.ozutil.copyfile_sparse(self.diskimage, self.jeos_filename)
+        dom = self.libvirt_conn.createXML(self._generate_xml("fd", fddev),
+                                          0)
+        self._wait_for_install_finish(dom, timeout)
+
+        if self.cache_jeos:
+            self.log.info("Caching JEOS")
+            oz.ozutil.mkdir_p(self.jeos_cache_dir)
+            oz.ozutil.copyfile_sparse(self.diskimage, self.jeos_filename)
 
         return self._generate_xml("hd", None)
 
@@ -1616,7 +1702,7 @@ class FDGuest(Guest):
         Method to cleanup the temporary floppy data.
         """
         self.log.info("Cleaning up floppy data")
-        shutil.rmtree(self.floppy_contents)
+        oz.ozutil.rmtree_and_sync(self.floppy_contents)
 
     def cleanup_install(self):
         """

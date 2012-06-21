@@ -1,4 +1,4 @@
-# Copyright (C) 2010,2011  Chris Lalancette <clalance@redhat.com>
+# Copyright (C) 2010,2011,2012  Chris Lalancette <clalance@redhat.com>
 
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -422,8 +422,6 @@ Subsystem	sftp	/usr/libexec/openssh/sftp-server
         """
         self.log.info("Collection Setup")
 
-        oz.ozutil.mkdir_p(self.icicle_tmp)
-
         g_handle = self._guestfs_handle_setup(libvirt_xml)
 
         # we have to do 5 things to make sure we can ssh into RHEL/Fedora:
@@ -477,7 +475,8 @@ Subsystem	sftp	/usr/libexec/openssh/sftp-server
 
     def do_icicle(self, guestaddr):
         """
-        Method to collect the package information and generate the ICICLE XML.
+        Method to collect the package information and generate the ICICLE
+        XML.
         """
         stdout, stderr, retcode = self.guest_execute_command(guestaddr,
                                                              'rpm -qa',
@@ -571,20 +570,25 @@ Subsystem	sftp	/usr/libexec/openssh/sftp-server
 
     def _get_kernel_from_treeinfo(self, fetchurl):
         """
-        Internal method to download and parse the .treeinfo file from a URL.
+        Internal method to download and parse the .treeinfo file from a URL.  If
+        the .treeinfo file does not exist, or it does not have the keys that we
+        expect, this method raises an error.
         """
-        kernel = None
-        initrd = None
+        treeinfourl = fetchurl + "/.treeinfo"
 
-        oz.ozutil.mkdir_p(self.icicle_tmp)
+        # first we check if the .treeinfo exists; this throws an exception if
+        # it is missing
+        response = urllib2.urlopen(treeinfourl)
+        response.close()
+
         treeinfo = os.path.join(self.icicle_tmp, "treeinfo")
         self.log.debug("Going to write treeinfo to %s" % (treeinfo))
         treeinfofd = os.open(treeinfo, os.O_RDWR | os.O_CREAT | os.O_TRUNC)
         os.unlink(treeinfo)
         fp = os.fdopen(treeinfofd)
         try:
-            self.log.debug("Trying to get treeinfo from " + fetchurl + "/.treeinfo")
-            self._download_file(fetchurl + "/.treeinfo", treeinfofd, 0)
+            self.log.debug("Trying to get treeinfo from " + treeinfourl)
+            self._download_file(treeinfourl, treeinfofd, 0)
 
             # if we made it here, the .treeinfo existed.  Parse it and
             # find out the location of the vmlinuz and initrd
@@ -595,11 +599,11 @@ Subsystem	sftp	/usr/libexec/openssh/sftp-server
             section = "images-%s" % (self.tdl.arch)
             kernel = oz.ozutil.config_get_key(config, section, "kernel", None)
             initrd = oz.ozutil.config_get_key(config, section, "initrd", None)
-        except:
-            # OK, it looks like the .treeinfo didn't exist
-            self.log.debug(".treeinfo didn't exist!")
         finally:
             fp.close()
+
+        if kernel is None or initrd is None:
+            raise oz.OzException.OzException("Empty kernel or initrd")
 
         self.log.debug("Returning kernel %s and initrd %s" % (kernel, initrd))
         return (kernel, initrd)
@@ -622,21 +626,80 @@ Subsystem	sftp	/usr/libexec/openssh/sftp-server
             os.unlink(self.initrdfname)
             raise
 
+    def _create_cpio_initrd(self, kspath):
+        """
+        Internal method to create a modified CPIO initrd
+        """
+        # if initrdtype is cpio, then we can just append a gzipped
+        # archive onto the end of the initrd
+        extrafname = os.path.join(self.icicle_tmp, "extra.cpio")
+        self.log.debug("Writing cpio to %s" % (extrafname))
+        cpiofiledict = {}
+        cpiofiledict[kspath] = 'ks.cfg'
+        oz.ozutil.write_cpio(cpiofiledict, extrafname)
+
+        try:
+            shutil.copyfile(self.initrdcache, self.initrdfname)
+            self._gzip_file(extrafname, 'ab')
+        finally:
+            os.unlink(extrafname)
+
+    def _create_ext2_initrd(self, kspath):
+        """
+        Internal method to create a modified ext2 initrd
+        """
+        # in this case, the archive is not CPIO but is an ext2
+        # filesystem.  use guestfs to mount it and add the kickstart
+        self.log.debug("Creating temporary directory")
+        tmpdir = os.path.join(self.icicle_tmp, "initrd")
+        oz.ozutil.mkdir_p(tmpdir)
+
+        ext2file = os.path.join(tmpdir, "initrd.ext2")
+        self.log.debug("Uncompressing initrd %s to %s" % (self.initrdfname, ext2file))
+        inf = gzip.open(self.initrdcache, 'rb')
+        outf = open(ext2file, "w")
+        try:
+            outf.writelines(inf)
+            inf.close()
+
+            g = guestfs.GuestFS()
+            g.add_drive_opts(ext2file, format='raw')
+            self.log.debug("Launching guestfs")
+            g.launch()
+
+            g.mount_options('', g.list_devices()[0], "/")
+
+            g.upload(kspath, "/ks.cfg")
+
+            g.sync()
+            g.umount_all()
+            g.kill_subprocess()
+
+            # kickstart is added, lets recompress it
+            self._gzip_file(ext2file, 'wb')
+        finally:
+            os.unlink(ext2file)
+
     def _initrd_inject_ks(self, fetchurl, force_download):
         """
         Internal method to download and inject a kickstart into an initrd.
         """
         # we first see if we can use direct kernel booting, as that is
         # faster than downloading the ISO
-        (kernel, initrd) = self._get_kernel_from_treeinfo(fetchurl)
+        kernel = None
+        initrd = None
+        try:
+            (kernel, initrd) = self._get_kernel_from_treeinfo(fetchurl)
+        except:
+            pass
 
         if kernel is None:
-            self.log.debug("Kernel was None, so hardcoding to images/pxeboot/vmlinuz")
+            self.log.debug("Kernel was None, trying images/pxeboot/vmlinuz")
             # we couldn't find the kernel in the treeinfo, so try a
             # hard-coded path
             kernel = "images/pxeboot/vmlinuz"
         if initrd is None:
-            self.log.debug("Initrd was None, so hardcoding to images/pxeboot/initrd.img")
+            self.log.debug("Initrd was None, trying images/pxeboot/initrd.img")
             # we couldn't find the initrd in the treeinfo, so try a
             # hard-coded path
             initrd = "images/pxeboot/initrd.img"
@@ -662,51 +725,9 @@ Subsystem	sftp	/usr/libexec/openssh/sftp-server
 
             try:
                 if self.initrdtype == "cpio":
-                    # if initrdtype is cpio, then we can just append a gzipped
-                    # archive onto the end of the initrd
-                    extrafname = os.path.join(self.icicle_tmp, "extra.cpio")
-                    self.log.debug("Writing cpio to %s" % (extrafname))
-                    cpiofiledict = {}
-                    cpiofiledict[kspath] = 'ks.cfg'
-                    oz.ozutil.write_cpio(cpiofiledict, extrafname)
-
-                    try:
-                        shutil.copyfile(self.initrdcache, self.initrdfname)
-                        self._gzip_file(extrafname, 'ab')
-                    finally:
-                        os.unlink(extrafname)
+                    self._create_cpio_initrd(kspath)
                 elif self.initrdtype == "ext2":
-                    # in this case, the archive is not CPIO but is an ext2
-                    # filesystem.  use guestfs to mount it and add the kickstart
-                    self.log.debug("Creating temporary directory")
-                    tmpdir = os.path.join(self.icicle_tmp, "initrd")
-                    oz.ozutil.mkdir_p(tmpdir)
-
-                    ext2file = os.path.join(tmpdir, "initrd.ext2")
-                    self.log.debug("Uncompressing initrd %s to %s" % (self.initrdfname, ext2file))
-                    inf = gzip.open(self.initrdcache, 'rb')
-                    outf = open(ext2file, "w")
-                    try:
-                        outf.writelines(inf)
-                        inf.close()
-
-                        g = guestfs.GuestFS()
-                        g.add_drive_opts(ext2file, format='raw')
-                        self.log.debug("Launching guestfs")
-                        g.launch()
-
-                        g.mount_options('', g.list_devices()[0], "/")
-
-                        g.upload(kspath, "/ks.cfg")
-
-                        g.sync()
-                        g.umount_all()
-                        g.kill_subprocess()
-
-                        # kickstart is added, lets recompress it
-                        self._gzip_file(ext2file, 'wb')
-                    finally:
-                        os.unlink(ext2file)
+                    self._create_ext2_initrd(kspath)
                 else:
                     raise oz.OzException.OzException("Invalid initrdtype, this is a programming error")
             finally:
@@ -834,7 +855,7 @@ class RedHatCDYumGuest(RedHatCDGuest):
 
         return url
 
-    protocol_to_default_port = {
+    _protocol_to_default_port = {
         'http': '80',
         'https': '443',
         'ftp': '21',
@@ -856,7 +877,7 @@ class RedHatCDYumGuest(RedHatCDGuest):
             else:
                 # URL without port
                 (protocol, hostname, path) = sr.group(8, 10, 12)
-                port = self.protocol_to_default_port[protocol]
+                port = self._protocol_to_default_port[protocol]
             return (protocol, hostname, port, path)
         else:
             raise oz.OzException.OzException("Could not decode URL (%s) for port forwarding" % (repourl))

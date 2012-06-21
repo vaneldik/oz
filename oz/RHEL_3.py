@@ -1,4 +1,4 @@
-# Copyright (C) 2010,2011  Chris Lalancette <clalance@redhat.com>
+# Copyright (C) 2010,2011,2012  Chris Lalancette <clalance@redhat.com>
 
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -27,7 +27,7 @@ import oz.OzException
 
 class RHEL3Guest(oz.RedHat.RedHatCDGuest):
     """
-    Class for RHEL-3 installation.
+    Class for RHEL-3 GOLD, U1, U2, U3, U4, U5, U6, U7, U8, and U9 installation.
     """
     def __init__(self, tdl, config, auto, output_disk):
         iso_support = True
@@ -83,8 +83,7 @@ Subsystem	sftp	/usr/libexec/openssh/sftp-server
             # information.  We just pass through here, doing nothing
         else:
             if self.tdl.installtype == "iso":
-                if not re.match("CentOS-3(\.[0-9])? " + self.tdl.arch + " DVD$",
-                                pvd.volume_identifier):
+                if not re.match("CentOS-3(\.[0-9])? Disk 1", pvd.volume_identifier) and not re.match("CentOS-3(\.[0-9])? server", pvd.volume_identifier) and not re.match("CentOS-3(\.[0-9])? " + self.tdl.arch + " DVD", pvd.volume_identifier):
                     raise oz.OzException.OzException("Only DVDs are supported for CentOS-3 ISO installs")
             # The boot ISOs for CentOS-3 don't have a whole lot of identifying
             # information.  We just pass through here, doing nothing
