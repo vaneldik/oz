@@ -139,9 +139,14 @@ class Guest(object):
         # configuration from 'paths' section
         self.output_dir = oz.ozutil.config_get_key(config, 'paths',
                                                    'output_dir',
-                                                   '/var/lib/libvirt/images')
-        self.data_dir = oz.ozutil.config_get_key(config, 'paths', 'data_dir',
-                                                 '/var/lib/oz')
+                                                   oz.ozutil.default_output_dir())
+
+        oz.ozutil.mkdir_p(self.output_dir)
+
+        self.data_dir = oz.ozutil.config_get_key(config, 'paths',
+                                                 'data_dir',
+                                                 oz.ozutil.default_data_dir())
+
         self.screenshot_dir = oz.ozutil.config_get_key(config, 'paths',
                                                        'screenshot_dir', '.')
 
@@ -152,6 +157,12 @@ class Guest(object):
                                                      None)
         self.bridge_name = oz.ozutil.config_get_key(config, 'libvirt',
                                                     'bridge_name', None)
+        self.install_cpus = oz.ozutil.config_get_key(config, 'libvirt', 'cpus',
+                                                     1)
+        # the memory in the configuration file is specified in megabytes, but
+        # libvirt expects kilobytes, so multiply by 1024
+        self.install_memory = oz.ozutil.config_get_key(config, 'libvirt',
+                                                       'memory', 1024) * 1024
 
         # configuration from 'cache' section
         self.cache_original_media = oz.ozutil.config_get_boolean_key(config,
@@ -332,8 +343,8 @@ class Guest(object):
         domain.newChild(None, "name", self.tdl.name)
 
         # create memory elements
-        domain.newChild(None, "memory", "1048576")
-        domain.newChild(None, "currentMemory", "1048576")
+        domain.newChild(None, "memory", str(self.install_memory))
+        domain.newChild(None, "currentMemory", str(self.install_memory))
 
         # create uuid
         domain.newChild(None, "uuid", str(self.uuid))
@@ -343,7 +354,7 @@ class Guest(object):
         clock.setProp("offset", self.clockoffset)
 
         # create vcpu
-        domain.newChild(None, "vcpu", "1")
+        domain.newChild(None, "vcpu", str(self.install_cpus))
 
         # create features
         features = domain.newChild(None, "features", None)
@@ -450,6 +461,11 @@ class Guest(object):
         f = open(self.diskimage, "w")
         f.truncate(size * 1024 * 1024 * 1024)
         f.close()
+
+        # FIXME: this makes the permissions insecure, but is needed since
+        # libvirt launches guests as qemu:qemu.
+        os.chmod(self.diskimage,
+                 stat.S_IRUSR|stat.S_IWUSR|stat.S_IRGRP|stat.S_IWGRP|stat.S_IROTH|stat.S_IWOTH)
 
         if create_partition:
             dev = parted.Device(self.diskimage)
@@ -1352,6 +1368,17 @@ class CDGuest(Guest):
                 finally:
                     os.close(rd)
                     os.close(wr)
+
+                # since we extracted from an ISO, there are no write bits
+                # on any of the directories.  Fix that here
+                for dirpath, dirnames, filenames in os.walk(self.iso_contents):
+                    st = os.stat(dirpath)
+                    os.chmod(dirpath, st.st_mode|stat.S_IWUSR)
+                    for name in filenames:
+                        fullpath = os.path.join(dirpath, name)
+                        st = os.stat(fullpath)
+                        os.chmod(fullpath, st.st_mode|stat.S_IWUSR)
+
             finally:
                 os.chdir(current)
         finally:
@@ -1616,6 +1643,15 @@ class CDGuest(Guest):
         Method to cleanup the local ISO contents.
         """
         self.log.info("Cleaning up old ISO data")
+        # if we are running as non-root, then there might be some files left
+        # around that are not writable, which means that the rmtree below would
+        # fail.  Recurse into the iso_contents tree, doing a chmod +w on
+        # every file and directory to make sure the rmtree succeeds
+        for dirpath, dirnames, filenames in os.walk(self.iso_contents):
+            os.chmod(dirpath, stat.S_IWUSR|stat.S_IXUSR|stat.S_IRUSR)
+            for name in filenames:
+                os.chmod(os.path.join(dirpath, name), stat.S_IRUSR|stat.S_IWUSR)
+
         oz.ozutil.rmtree_and_sync(self.iso_contents)
 
     def cleanup_install(self):
